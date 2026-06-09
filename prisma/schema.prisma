@@ -1,0 +1,228 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      Role     @default(KASIR)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  journalEntries JournalEntry[]
+  expenses  Expense[]
+  transactions Transaction[]
+}
+
+model Patient {
+  id              String        @id @default(uuid())
+  name            String
+  medicalRecordNo String        @unique
+  phone           String?
+  nik             String?       @unique    // NIK 16 digit — untuk integrasi RME nanti
+  address         String?
+  jenisKelamin    JenisKelamin?
+  noBpjs          String?                  // Nomor BPJS 13 digit
+  insuranceType   InsuranceType @default(UMUM)
+  isActive        Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  transactions Transaction[]
+}
+
+model Item {
+  id        String   @id @default(uuid())
+  name      String
+  type      ItemType
+  price     Float
+  unit      String?
+
+  transactionItems TransactionItem[]
+}
+
+model Transaction {
+  id            String            @id @default(uuid())
+  patientId     String
+  userId        String
+  status        TransactionStatus @default(DRAFT)
+  paymentMethod PaymentMethod?
+  subtotal      Float             @default(0)
+  tax           Float             @default(0)
+  adminFee      Float             @default(0)
+  total         Float             @default(0)
+  qrisUrl       String?
+  qrisToken     String?
+  midtransOrderId String?         @unique
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  paidAt        DateTime?     
+  journalEntry  JournalEntry? 
+
+  patient Patient @relation(fields: [patientId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+  items   TransactionItem[]
+}
+
+model TransactionItem {
+  id            String  @id @default(uuid())
+  transactionId String
+  itemId        String
+  quantity      Int
+  price         Float
+  subtotal      Float
+
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+  item        Item        @relation(fields: [itemId], references: [id])
+}
+
+enum Role {
+  SUPER_ADMIN
+  MANAGER
+  KASIR
+  FINANCE_STAFF   // ← BARU: sesuai PRD v3 Role Access Matrix
+}
+
+enum JenisKelamin {
+  LAKI_LAKI
+  PEREMPUAN
+}
+
+enum InsuranceType {
+  UMUM
+  BPJS
+  VOUCHER
+}
+
+enum ItemType {
+  OBAT
+  LAYANAN
+}
+
+enum TransactionStatus {
+  DRAFT
+  PENDING_PAYMENT
+  LUNAS
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  QRIS
+  DEBIT
+  TRANSFER
+  BPJS
+}
+
+// ----------------------------------------------------------------
+// ACCOUNTING ENGINE
+// ----------------------------------------------------------------
+
+enum AccountType {
+  ASSET      // 1xxx — Aset (Kas, Bank, Piutang)
+  LIABILITY  // 2xxx — Kewajiban (Hutang)
+  EQUITY     // 3xxx — Modal
+  REVENUE    // 4xxx — Pendapatan
+  EXPENSE    // 5xxx — Beban
+}
+
+enum NormalBalance {
+  DEBIT
+  CREDIT
+}
+
+enum JournalType {
+  INCOME      // dari transaksi LUNAS
+  EXPENSE     // dari pencatatan pengeluaran
+  ADJUSTMENT  // koreksi manual
+}
+
+enum ExpenseCategory {
+  PAYROLL         // gaji karyawan
+  STOCK_PURCHASE  // pembelian stok obat
+  OPERATIONAL     // listrik, air, internet
+  MAINTENANCE     // perawatan peralatan
+  OTHER
+}
+
+model ChartOfAccount {
+  id            String        @id @default(uuid())
+  code          String        @unique // "1100", "4100", dst
+  name          String
+  type          AccountType
+  normalBalance NormalBalance
+  description   String?
+  isActive      Boolean       @default(true)
+  createdAt     DateTime      @default(now())
+
+  journalLines  JournalLine[]
+  expenses      Expense[]
+
+  @@map("chart_of_accounts")
+}
+
+model JournalEntry {
+  id          String      @id @default(uuid())
+  entryDate   DateTime    @default(now())
+  description String
+  type        JournalType
+  referenceNo String?     // nomor transaksi asal
+
+  // Sumber jurnal — salah satu diisi, yang lain null
+  transactionId String?   @unique
+  expenseId     String?   @unique
+
+  createdBy   String
+  createdAt   DateTime    @default(now())
+
+  transaction Transaction?  @relation(fields: [transactionId], references: [id])
+  user        User          @relation(fields: [createdBy], references: [id])
+  lines       JournalLine[]
+  expense     Expense?
+
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id             String  @id @default(uuid())
+  journalEntryId String
+  accountId      String
+  debit          Decimal @default(0) @db.Decimal(12, 2)
+  credit         Decimal @default(0) @db.Decimal(12, 2)
+  description    String?
+
+  journalEntry   JournalEntry   @relation(fields: [journalEntryId], references: [id])
+  account        ChartOfAccount @relation(fields: [accountId], references: [id])
+
+  @@map("journal_lines")
+}
+
+model Expense {
+  id          String          @id @default(uuid())
+  category    ExpenseCategory
+  amount      Decimal         @db.Decimal(12, 2)
+  description String
+  expenseDate DateTime
+  accountId   String
+  createdBy   String
+  createdAt   DateTime        @default(now())
+
+  journalEntryId String?      @unique
+
+  account      ChartOfAccount @relation(fields: [accountId], references: [id])
+  user         User           @relation(fields: [createdBy], references: [id])
+  journalEntry JournalEntry?  @relation(fields: [journalEntryId], references: [id])
+
+  @@map("expenses")
+}
