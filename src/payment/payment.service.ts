@@ -4,6 +4,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { RmeService } from '../rme/rme.service';
+import { WmsService } from '../wms/wms.service';
 import { TransactionStatus } from '@prisma/client';
 import * as midtransClient from 'midtrans-client';
 
@@ -16,6 +17,7 @@ export class PaymentService {
     private prisma: PrismaService,
     private accountingService: AccountingService,
     private rmeService: RmeService,
+    private wmsService: WmsService,
   ) {
     this.snap = new midtransClient.Snap({
       isProduction: process.env.MIDTRANS_IS_PRODUCTION === 'true',
@@ -24,7 +26,7 @@ export class PaymentService {
     });
   }
 
-  // ─── CREATE SNAP TOKEN (single payment — backward compat) ─
+  // ─── CREATE SNAP TOKEN ───────────────────────────────────
 
   async createSnapToken(transactionId: string) {
     const transaction = await this.prisma.db.transaction.findUnique({
@@ -38,15 +40,11 @@ export class PaymentService {
     if (!transaction) throw new NotFoundException('Transaksi tidak ditemukan');
 
     if (!['PENDING_PAYMENT', 'PARTIAL'].includes(transaction.status)) {
-      throw new BadRequestException(
-        `Transaksi tidak bisa dibayar — status: ${transaction.status}`,
-      );
+      throw new BadRequestException(`Transaksi tidak bisa dibayar — status: ${transaction.status}`);
     }
 
     const remainingAmount = transaction.total - transaction.paidAmount;
-    if (remainingAmount <= 0) {
-      throw new BadRequestException('Transaksi sudah lunas');
-    }
+    if (remainingAmount <= 0) throw new BadRequestException('Transaksi sudah lunas');
 
     const orderId = `POS-${transaction.id.substring(0, 8)}-${Date.now()}`;
 
@@ -70,7 +68,6 @@ export class PaymentService {
 
     const snapResponse = await this.snap.createTransaction(parameter);
 
-    // Update midtransOrderId di Transaction (backward compat)
     await this.prisma.db.transaction.update({
       where: { id: transactionId },
       data: { midtransOrderId: orderId },
@@ -85,6 +82,7 @@ export class PaymentService {
         snapRedirectUrl: snapResponse.redirect_url,
         total: remainingAmount,
         rmeBillingId: transaction.rmeBillingId,
+        wmsOrderId: transaction.wmsOrderId,
       },
     };
   }
@@ -101,29 +99,24 @@ export class PaymentService {
       return { message: 'Webhook diabaikan: tidak ada order_id' };
     }
 
-    // Tentukan status baru
-    let isSucess = false;
+    let isSuccess = false;
     let isCancelled = false;
 
-    if (transactionStatus === 'settlement') {
-      isSucess = true;
-    } else if (transactionStatus === 'capture' && fraudStatus === 'accept') {
-      isSucess = true;
-    } else if (['cancel', 'deny', 'expire', 'failure'].includes(transactionStatus)) {
-      isCancelled = true;
-    }
+    if (transactionStatus === 'settlement') isSuccess = true;
+    else if (transactionStatus === 'capture' && fraudStatus === 'accept') isSuccess = true;
+    else if (['cancel', 'deny', 'expire', 'failure'].includes(transactionStatus)) isCancelled = true;
 
-    // ─── Cek apakah ini Payment dari split bill ──────────
+    // Cek split payment dulu
     const splitPayment = await this.prisma.db.payment.findUnique({
       where: { midtransOrderId: orderId },
       include: { transaction: true },
     });
 
     if (splitPayment) {
-      return await this.handleSplitPaymentWebhook(splitPayment, isSucess, isCancelled);
+      return await this.handleSplitPaymentWebhook(splitPayment, isSuccess, isCancelled);
     }
 
-    // ─── Fallback: single payment via tokenizer (backward compat) ──
+    // Fallback single payment
     const transaction = await this.prisma.db.transaction.findFirst({
       where: { midtransOrderId: orderId },
     });
@@ -132,26 +125,20 @@ export class PaymentService {
       throw new NotFoundException(`Transaksi/Payment dengan order_id ${orderId} tidak ditemukan`);
     }
 
-    return await this.handleSinglePaymentWebhook(transaction, isSucess, isCancelled);
+    return await this.handleSinglePaymentWebhook(transaction, isSuccess, isCancelled);
   }
 
-  // ─── HANDLER: Split Bill QRIS Payment ───────────────────
+  // ─── HANDLER: Split Bill QRIS ────────────────────────────
 
-  private async handleSplitPaymentWebhook(
-    payment: any,
-    isSuccess: boolean,
-    isCancelled: boolean,
-  ) {
+  private async handleSplitPaymentWebhook(payment: any, isSuccess: boolean, isCancelled: boolean) {
     const transaction = payment.transaction;
 
     if (isSuccess) {
-      // Update Payment → PAID
       await this.prisma.db.payment.update({
         where: { id: payment.id },
         data: { status: 'PAID', paidAt: new Date() },
       });
 
-      // Update Transaction.paidAmount
       const newPaidAmount = transaction.paidAmount + payment.amount;
       const isFullyPaid = newPaidAmount >= transaction.total - 0.01;
       const newStatus = isFullyPaid ? 'LUNAS' : 'PARTIAL';
@@ -168,10 +155,7 @@ export class PaymentService {
 
       if (isFullyPaid) {
         this.logger.log(`✅ Split bill LUNAS: ${transaction.id}`);
-        await Promise.allSettled([
-          this.handleAutoJournal(transaction.id, transaction.userId),
-          this.handleRmeCallback(transaction.rmeBillingId, 'QRIS', transaction.id),
-        ]);
+        await this.runPostPaymentActions(transaction, 'QRIS');
       }
 
       return {
@@ -187,21 +171,15 @@ export class PaymentService {
         where: { id: payment.id },
         data: { status: 'CANCELLED' },
       });
-
-      this.logger.warn(`QRIS payment ${payment.id} dibatalkan/expired`);
       return { message: 'QRIS payment dibatalkan', status: 'CANCELLED' };
     }
 
     return { message: 'Webhook diterima, tidak ada perubahan status' };
   }
 
-  // ─── HANDLER: Single Payment (backward compat) ──────────
+  // ─── HANDLER: Single Payment ─────────────────────────────
 
-  private async handleSinglePaymentWebhook(
-    transaction: any,
-    isSuccess: boolean,
-    isCancelled: boolean,
-  ) {
+  private async handleSinglePaymentWebhook(transaction: any, isSuccess: boolean, isCancelled: boolean) {
     let newStatus: TransactionStatus = transaction.status;
 
     if (isSuccess) newStatus = TransactionStatus.LUNAS;
@@ -217,14 +195,72 @@ export class PaymentService {
     });
 
     if (newStatus === TransactionStatus.LUNAS) {
-      await Promise.allSettled([
-        this.handleAutoJournal(transaction.id, transaction.userId),
-        this.handleRmeCallback(transaction.rmeBillingId, transaction.paymentMethod, transaction.id),
-      ]);
+      await this.runPostPaymentActions(transaction, transaction.paymentMethod);
     }
 
     this.logger.log(`Webhook single payment: ${transaction.id} → ${newStatus}`);
     return { message: 'Webhook berhasil diproses', status: newStatus };
+  }
+
+  // ─── POST-PAYMENT ACTIONS ────────────────────────────────
+
+  /**
+   * Jalankan semua aksi setelah transaksi LUNAS secara paralel.
+   * Kegagalan salah satu tidak menggagalkan yang lain.
+   */
+  private async runPostPaymentActions(transaction: any, paymentMethod: string): Promise<void> {
+    await Promise.allSettled([
+      this.handleAutoJournal(transaction.id, transaction.userId),
+      this.handleRmeCallback(transaction.rmeBillingId, paymentMethod, transaction.id),
+      this.handleWmsCallback(transaction.wmsOrderId, transaction.id, paymentMethod),
+    ]);
+  }
+
+  private async handleAutoJournal(transactionId: string, userId: string): Promise<void> {
+    try {
+      const systemUser = await this.prisma.db.user.findFirst({ where: { role: 'SUPER_ADMIN' } });
+      const createdBy = systemUser?.id ?? userId;
+      await this.accountingService.createJournalFromTransaction(transactionId, createdBy);
+      this.logger.log(`📒 Auto-journal: ${transactionId}`);
+    } catch (err) {
+      this.logger.error(`Auto-journal gagal untuk ${transactionId}:`, err);
+    }
+  }
+
+  private async handleRmeCallback(
+    rmeBillingId: string | null,
+    paymentMethod: string,
+    transactionId: string,
+  ): Promise<void> {
+    if (!rmeBillingId) return;
+    const success = await this.rmeService.payBilling(
+      rmeBillingId,
+      paymentMethod,
+      `Lunas via Smart Clinic POS | TrxID: ${transactionId}`,
+    );
+    if (!success) this.logger.warn(`⚠️ RME callback gagal: billing ${rmeBillingId}`);
+  }
+
+  private async handleWmsCallback(
+    wmsOrderId: string | null,
+    transactionId: string,
+    paymentMethod: string,
+  ): Promise<void> {
+    if (!wmsOrderId) {
+      this.logger.debug(`Transaksi ${transactionId} tidak punya wmsOrderId — skip WMS callback`);
+      return;
+    }
+
+    const success = await this.wmsService.updatePaymentStatus(wmsOrderId, 'paid', {
+      posTransactionId: transactionId,
+      paymentReference: `POS-${transactionId.substring(0, 8)}`,
+      paidAt: new Date(),
+      notes: `Lunas via Smart Clinic POS | Metode: ${paymentMethod}`,
+    });
+
+    if (!success) {
+      this.logger.warn(`⚠️ WMS callback gagal: order ${wmsOrderId} — perlu manual follow-up`);
+    }
   }
 
   // ─── GET TRANSACTION STATUS ──────────────────────────────
@@ -251,39 +287,11 @@ export class PaymentService {
         paymentMethod: transaction.paymentMethod,
         midtransOrderId: transaction.midtransOrderId,
         rmeBillingId: transaction.rmeBillingId,
+        wmsOrderId: transaction.wmsOrderId,
         paidAt: transaction.paidAt,
         patient: transaction.patient,
         payments: transaction.payments,
       },
     };
-  }
-
-  // ─── PRIVATE HELPERS ─────────────────────────────────────
-
-  private async handleAutoJournal(transactionId: string, userId: string): Promise<void> {
-    try {
-      const systemUser = await this.prisma.db.user.findFirst({ where: { role: 'SUPER_ADMIN' } });
-      const createdBy = systemUser?.id ?? userId;
-      await this.accountingService.createJournalFromTransaction(transactionId, createdBy);
-      this.logger.log(`📒 Auto-journal: ${transactionId}`);
-    } catch (err) {
-      this.logger.error(`Auto-journal gagal untuk ${transactionId}:`, err);
-    }
-  }
-
-  private async handleRmeCallback(
-    rmeBillingId: string | null,
-    paymentMethod: string,
-    transactionId: string,
-  ): Promise<void> {
-    if (!rmeBillingId) return;
-    const success = await this.rmeService.payBilling(
-      rmeBillingId,
-      paymentMethod,
-      `Lunas via Smart Clinic POS | TrxID: ${transactionId}`,
-    );
-    if (!success) {
-      this.logger.warn(`⚠️ RME callback gagal: billing ${rmeBillingId}`);
-    }
   }
 }

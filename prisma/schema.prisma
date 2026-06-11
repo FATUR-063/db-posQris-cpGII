@@ -23,7 +23,6 @@ model User {
 model Patient {
   id              String        @id @default(uuid())
   name            String
-  age             String        
   medicalRecordNo String        @unique
   phone           String?
   nik             String?       @unique
@@ -39,11 +38,12 @@ model Patient {
 }
 
 model Item {
-  id    String   @id @default(uuid())
-  name  String
-  type  ItemType
-  price Float
-  unit  String?
+  id       String   @id @default(uuid())
+  name     String
+  type     ItemType
+  price    Float
+  unit     String?
+  kodeObat String?  // kode obat WMS (OBT-001) — opsional, untuk integrasi WMS
 
   transactionItems TransactionItem[]
 }
@@ -53,25 +53,26 @@ model Transaction {
   patientId       String
   userId          String
   status          TransactionStatus @default(DRAFT)
-  paymentMethod   PaymentMethod?    // metode pembayaran utama / terakhir
+  paymentMethod   PaymentMethod?
   subtotal        Float             @default(0)
   tax             Float             @default(0)
   adminFee        Float             @default(0)
   total           Float             @default(0)
-  paidAmount      Float             @default(0)  // total yang sudah dibayar
-  bpjsAmount      Float             @default(0)  // porsi BPJS dari RME
-  nonBpjsAmount   Float             @default(0)  // porsi non-BPJS dari RME
+  paidAmount      Float             @default(0)
+  bpjsAmount      Float             @default(0)
+  nonBpjsAmount   Float             @default(0)
   qrisUrl         String?
   qrisToken       String?
-  midtransOrderId String?           @unique       // untuk single payment (backward compat)
+  midtransOrderId String?           @unique
   rmeBillingId    String?
   rekamMedisId    String?
+  wmsOrderId      String?           // ID order di WMS pharmacy
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
   paidAt          DateTime?
 
-  patient      Patient          @relation(fields: [patientId], references: [id])
-  user         User             @relation(fields: [userId], references: [id])
+  patient      Patient           @relation(fields: [patientId], references: [id])
+  user         User              @relation(fields: [userId], references: [id])
   items        TransactionItem[]
   payments     Payment[]
   journalEntry JournalEntry?
@@ -89,16 +90,14 @@ model TransactionItem {
   item        Item        @relation(fields: [itemId], references: [id])
 }
 
-// ─── SPLIT BILL — Payment per metode ────────────────────────────
-
 model Payment {
   id              String        @id @default(uuid())
   transactionId   String
   method          PaymentMethod
   amount          Float
   status          PaymentStatus @default(PENDING)
-  midtransOrderId String?       @unique  // untuk QRIS via Midtrans
-  reference       String?               // nomor klaim BPJS / referensi manual
+  midtransOrderId String?       @unique
+  reference       String?
   isBpjsCoverage  Boolean       @default(false)
   paidAt          DateTime?
   createdAt       DateTime      @default(now())
@@ -108,7 +107,7 @@ model Payment {
   @@map("payments")
 }
 
-// ─── ENUMS ────────────────────────────────────────────────────────
+// ─── ENUMS ───────────────────────────────────────────────────────
 
 enum Role {
   SUPER_ADMIN
@@ -136,7 +135,7 @@ enum ItemType {
 enum TransactionStatus {
   DRAFT
   PENDING_PAYMENT
-  PARTIAL            // ← BARU: ada pembayaran tapi belum lunas
+  PARTIAL
   LUNAS
   CANCELLED
 }
@@ -150,13 +149,13 @@ enum PaymentMethod {
 }
 
 enum PaymentStatus {
-  PENDING    // QRIS belum dibayar / menunggu konfirmasi
-  PAID       // sudah dibayar & dikonfirmasi
-  CANCELLED  // dibatalkan / QRIS expired
+  PENDING
+  PAID
+  CANCELLED
   REFUNDED
 }
 
-// ─── ACCOUNTING ENGINE ────────────────────────────────────────────
+// ─── ACCOUNTING ENGINE ───────────────────────────────────────────
 
 enum AccountType {
   ASSET
