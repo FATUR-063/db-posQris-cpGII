@@ -29,11 +29,12 @@ export class CreatePatientDto {
     example: '3404010101900001',
     description: 'NIK 16 digit — untuk integrasi RME',
   })
+
   @IsOptional()
   @IsString()
   @Length(16, 16, { message: 'NIK harus 16 digit' })
   nik?: string;
-
+  
   @ApiPropertyOptional({ example: 'Jl. Merdeka No. 10, Jakarta' })
   @IsOptional()
   @IsString()
