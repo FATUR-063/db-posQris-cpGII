@@ -201,23 +201,24 @@ export class RmeService {
    * Simpan tokens dari response login/refresh.
    * Handle berbagai format response yang mungkin berbeda.
    */
-  private storeTokens(data: any): void {
-    // Handle berbagai struktur response — sesuaikan kalau format RME berbeda
-    this.accessToken =
-      data?.access_token ?? data?.accessToken ?? data?.token ?? null;
-    this.refreshTokenValue =
-      data?.refresh_token ?? data?.refreshToken ?? null;
+  // SESUDAH
+private storeTokens(data: any): void {
+  const tokenData = data?.data ?? data; // unwrap nested response
 
-    // Set expiry — default 1 jam kalau tidak ada info dari response
-    const expiresIn = data?.expires_in ?? data?.expiresIn ?? 3600;
-    this.tokenExpiresAt = new Date(Date.now() + expiresIn * 1000);
+  this.accessToken =
+    tokenData?.accessToken ?? tokenData?.access_token ?? tokenData?.token ?? null;
+  this.refreshTokenValue =
+    tokenData?.refreshToken ?? tokenData?.refresh_token ?? null;
 
-    if (!this.accessToken) {
-      throw new InternalServerErrorException(
-        'RME login response tidak mengandung access_token',
-      );
-    }
+  const expiresIn = tokenData?.expires_in ?? tokenData?.expiresIn ?? 3600;
+  this.tokenExpiresAt = new Date(Date.now() + expiresIn * 1000);
+
+  if (!this.accessToken) {
+    throw new InternalServerErrorException(
+      'RME login response tidak mengandung access_token',
+    );
   }
+}
 
   private clearTokenCache(): void {
     this.accessToken = null;
