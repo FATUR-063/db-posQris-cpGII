@@ -11,12 +11,14 @@ import { PaymentModule } from './payment/payment.module';
 import { ItemsModule } from './items/items.module';
 import { AccountingModule } from './accounting/accounting.module';
 import { PatientsModule } from './patients/patients.module';
+import { RmeModule } from './rme/rme.module';
 
 @Module({
   imports: [
     PrismaModule,
     AuthModule,
     PatientsModule,
+    RmeModule,
     BillingModule,
     PaymentModule,
     ItemsModule,

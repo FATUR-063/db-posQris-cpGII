@@ -1,4 +1,6 @@
-import { Controller, Post, Get, Body, Param, Query, Request, UseGuards } from '@nestjs/common';
+import {
+  Controller, Post, Get, Body, Param, Query, Request, UseGuards,
+} from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { BillingService } from './billing.service';
 import { CreateBillingDto } from './dto/create-billing.dto';
@@ -18,29 +20,40 @@ export class BillingController {
   @Post()
   @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN')
   @ApiOperation({
-    summary: 'Buat transaksi baru + hitung total otomatis',
-    description: 'Kasir membuat transaksi billing. Total dihitung dari harga item × qty.',
+    summary: 'Buat transaksi baru',
+    description:
+      'Buat billing POS. Jika `rekamMedisId` diisi, sistem otomatis fetch ' +
+      'billing dari RME dan menyimpan `rmeBillingId` untuk update status setelah LUNAS.',
   })
   create(@Body() dto: CreateBillingDto, @Request() req: any) {
-    const userId = req.user.userId;
-    return this.billingService.createTransaction(dto, userId);
+    return this.billingService.createTransaction(dto, req.user.userId);
   }
 
-  // ─── LIST ALL ───────────────────────────────────────────
+  // ─── GET BILLING FROM RME (Preview) ─────────────────────
+
+  @Get('from-rme/:rekamMedisId')
+  @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN')
+  @ApiOperation({
+    summary: 'Preview billing dari RME by rekamMedisId',
+    description:
+      'Ambil data billing yang sudah dibuat RME untuk pasien ini. ' +
+      'Tidak membuat record di POS — hanya untuk preview sebelum transaksi dibuat. ' +
+      'Response berisi rmeBillingId, total, breakdown BPJS vs non-BPJS.',
+  })
+  getBillingFromRme(@Param('rekamMedisId') rekamMedisId: string) {
+    return this.billingService.getBillingFromRme(rekamMedisId);
+  }
+
+  // ─── LIST ALL ────────────────────────────────────────────
 
   @Get()
   @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN', 'FINANCE_STAFF')
-  @ApiOperation({
-    summary: 'Daftar semua transaksi + filter',
-    description:
-      'List transaksi dengan filter status, tanggal, pasien, dan metode pembayaran. ' +
-      'Mendukung pagination. Default: 20 transaksi terbaru.',
-  })
+  @ApiOperation({ summary: 'Daftar semua transaksi + filter' })
   @ApiQuery({ name: 'status', required: false, enum: ['DRAFT', 'PENDING_PAYMENT', 'LUNAS', 'CANCELLED'] })
   @ApiQuery({ name: 'paymentMethod', required: false, enum: ['CASH', 'QRIS', 'DEBIT', 'TRANSFER', 'BPJS'] })
-  @ApiQuery({ name: 'patientId', required: false, description: 'Filter by pasien' })
-  @ApiQuery({ name: 'from', required: false, example: '2026-06-01', description: 'Tanggal mulai' })
-  @ApiQuery({ name: 'to', required: false, example: '2026-06-30', description: 'Tanggal akhir' })
+  @ApiQuery({ name: 'patientId', required: false })
+  @ApiQuery({ name: 'from', required: false, example: '2026-06-01' })
+  @ApiQuery({ name: 'to', required: false, example: '2026-06-30' })
   @ApiQuery({ name: 'page', required: false, example: 1 })
   @ApiQuery({ name: 'limit', required: false, example: 20 })
   findAll(
@@ -53,28 +66,19 @@ export class BillingController {
     @Query('limit') limit?: string,
   ) {
     return this.billingService.findAll({
-      status,
-      paymentMethod,
-      patientId,
-      from,
-      to,
+      status, paymentMethod, patientId, from, to,
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
     });
   }
 
-  // ─── OUTSTANDING ────────────────────────────────────────
+  // ─── OUTSTANDING ─────────────────────────────────────────
 
   @Get('outstanding')
   @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN', 'FINANCE_STAFF')
-  @ApiOperation({
-    summary: 'Daftar invoice belum lunas (outstanding)',
-    description:
-      'Menampilkan transaksi PENDING_PAYMENT, diurutkan dari yang terlama. ' +
-      'Termasuk info berapa hari tagihan belum dibayar.',
-  })
-  @ApiQuery({ name: 'page', required: false, example: 1 })
-  @ApiQuery({ name: 'limit', required: false, example: 20 })
+  @ApiOperation({ summary: 'Daftar invoice belum lunas (outstanding)' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
   findOutstanding(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -85,33 +89,22 @@ export class BillingController {
     });
   }
 
-  // ─── SUMMARY / DASHBOARD ───────────────────────────────
+  // ─── SUMMARY ─────────────────────────────────────────────
 
   @Get('summary')
   @Roles('MANAGER', 'SUPER_ADMIN', 'FINANCE_STAFF')
-  @ApiOperation({
-    summary: 'Ringkasan transaksi & pendapatan (dashboard)',
-    description:
-      'Total transaksi, total pendapatan, outstanding, dan breakdown per metode pembayaran. ' +
-      'Bisa difilter berdasarkan periode tanggal. Default: hari ini.',
-  })
-  @ApiQuery({ name: 'from', required: false, example: '2026-06-01', description: 'Tanggal mulai' })
-  @ApiQuery({ name: 'to', required: false, example: '2026-06-30', description: 'Tanggal akhir' })
-  getSummary(
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-  ) {
+  @ApiOperation({ summary: 'Ringkasan transaksi & pendapatan (dashboard)' })
+  @ApiQuery({ name: 'from', required: false, example: '2026-06-01' })
+  @ApiQuery({ name: 'to', required: false, example: '2026-06-30' })
+  getSummary(@Query('from') from?: string, @Query('to') to?: string) {
     return this.billingService.getSummary({ from, to });
   }
 
-  // ─── DETAIL ─────────────────────────────────────────────
+  // ─── DETAIL ──────────────────────────────────────────────
 
   @Get(':id')
   @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN', 'FINANCE_STAFF')
-  @ApiOperation({
-    summary: 'Detail transaksi by ID',
-    description: 'Menampilkan detail transaksi lengkap dengan rincian item.',
-  })
+  @ApiOperation({ summary: 'Detail transaksi by ID' })
   findOne(@Param('id') id: string) {
     return this.billingService.getTransaction(id);
   }

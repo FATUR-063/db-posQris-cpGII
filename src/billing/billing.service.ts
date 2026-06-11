@@ -1,15 +1,61 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateBillingDto } from './dto/create-billing.dto';
+import { RmeService } from '../rme/rme.service';
 
 @Injectable()
 export class BillingService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private rmeService: RmeService,
+  ) {}
 
-  // ─── CREATE TRANSACTION (existing) ──────────────────────
+  // ─── GET BILLING FROM RME (Preview) ─────────────────────
+
+  /**
+   * Ambil data billing dari RME berdasarkan rekamMedisId.
+   * Digunakan FE untuk preview billing sebelum transaksi dibuat.
+   * Tidak membuat record apapun di database POS.
+   */
+  async getBillingFromRme(rekamMedisId: string) {
+    const rmeBilling = await this.rmeService.getBillingByRekamMedis(rekamMedisId);
+
+    if (!rmeBilling) {
+      return {
+        message: 'Data billing RME tidak tersedia',
+        data: null,
+        rmeAvailable: false,
+      };
+    }
+
+    // Hitung total BPJS dan non-BPJS untuk split billing
+    const bpjsTotal = rmeBilling.items
+      .filter((i) => i.isBpjs)
+      .reduce((sum, i) => sum + i.harga * i.jumlah, 0);
+
+    const nonBpjsTotal = rmeBilling.items
+      .filter((i) => !i.isBpjs)
+      .reduce((sum, i) => sum + i.harga * i.jumlah, 0);
+
+    return {
+      message: 'Data billing RME berhasil diambil',
+      rmeAvailable: true,
+      data: {
+        rmeBillingId: rmeBilling.id,
+        rekamMedisId: rmeBilling.rekamMedisId,
+        status: rmeBilling.status,
+        totalTagihan: rmeBilling.total,
+        bpjsTotal,
+        nonBpjsTotal,
+        items: rmeBilling.items,
+      },
+    };
+  }
+
+  // ─── CREATE TRANSACTION ──────────────────────────────────
 
   async createTransaction(dto: CreateBillingDto, userId: string) {
-    // 1. Validasi semua item ada di database
+    // 1. Validasi semua item ada di database POS
     const itemIds = dto.items.map((i) => i.itemId);
     const items = await this.prisma.db.item.findMany({
       where: { id: { in: itemIds } },
@@ -33,23 +79,45 @@ export class BillingService {
       };
     });
 
-    // 3. Hitung pajak & admin fee
-    const isBpjs = dto.paymentMethod === 'BPJS' || dto.voucherCode;
-    const tax = isBpjs ? 0 : 0;
-    const adminFee = isBpjs ? 0 : 0;
-    const total = isBpjs ? 0 : subtotal + tax + adminFee;
+    // 3. Resolve rmeBillingId
+    // Prioritas: dari dto.rmeBillingId → fetch dari RME jika ada rekamMedisId
+    let rmeBillingId = dto.rmeBillingId ?? null;
+    let rmeBillingTotal = 0;
 
-    // 4. Buat transaksi + detail sekaligus (atomic)
+    if (!rmeBillingId && dto.rekamMedisId) {
+      const rmeBilling = await this.rmeService.getBillingByRekamMedis(dto.rekamMedisId);
+      if (rmeBilling) {
+        rmeBillingId = rmeBilling.id;
+        rmeBillingTotal = rmeBilling.total;
+      }
+    }
+
+    // 4. Hitung total
+    const isBpjs = dto.paymentMethod === 'BPJS';
+    const hasVoucher = dto.voucherCode && dto.voucherCode.trim().length > 0;
+    const isFullyCovered = isBpjs || hasVoucher;
+
+    const tax = 0;
+    const adminFee = 0;
+    const posItemsTotal = subtotal + tax + adminFee;
+
+    // Total akhir = item POS + billing RME (kalau ada)
+    // Kalau BPJS/voucher, total = 0
+    const total = isFullyCovered ? 0 : posItemsTotal + rmeBillingTotal;
+
+    // 5. Buat transaksi + detail (atomic)
     const transaction = await this.prisma.db.transaction.create({
       data: {
         patientId: dto.patientId,
-        userId: userId,
-        paymentMethod: dto.paymentMethod,
+        userId,
+        paymentMethod: dto.paymentMethod as any,
         subtotal,
         tax,
         adminFee,
         total,
         status: 'PENDING_PAYMENT',
+        rmeBillingId,              // simpan ID billing RME
+        rekamMedisId: dto.rekamMedisId ?? null,
         items: {
           create: transactionItems,
         },
@@ -67,8 +135,9 @@ export class BillingService {
         paymentMethod: transaction.paymentMethod,
         subtotal: transaction.subtotal,
         tax: transaction.tax,
-        adminFee: transaction.adminFee,
         total: transaction.total,
+        rmeBillingId: transaction.rmeBillingId,
+        rekamMedisId: transaction.rekamMedisId,
         items: transaction.items.map((ti) => ({
           name: ti.item.name,
           type: ti.item.type,
@@ -80,14 +149,21 @@ export class BillingService {
     };
   }
 
-  // ─── GET TRANSACTION DETAIL (existing) ──────────────────
+  // ─── GET TRANSACTION DETAIL ──────────────────────────────
 
   async getTransaction(id: string) {
     const transaction = await this.prisma.db.transaction.findUnique({
       where: { id },
       include: {
         items: { include: { item: true } },
-        patient: { select: { id: true, name: true, medicalRecordNo: true, insuranceType: true } },
+        patient: {
+          select: {
+            id: true,
+            name: true,
+            medicalRecordNo: true,
+            insuranceType: true,
+          },
+        },
       },
     });
 
@@ -96,7 +172,7 @@ export class BillingService {
     return { message: 'Data transaksi', data: transaction };
   }
 
-  // ─── LIST ALL TRANSACTIONS ─────────────────────────────
+  // ─── LIST ALL TRANSACTIONS ───────────────────────────────
 
   async findAll(query: {
     status?: string;
@@ -113,19 +189,10 @@ export class BillingService {
 
     const where: any = {};
 
-    if (query.status) {
-      where.status = query.status;
-    }
+    if (query.status) where.status = query.status;
+    if (query.paymentMethod) where.paymentMethod = query.paymentMethod;
+    if (query.patientId) where.patientId = query.patientId;
 
-    if (query.paymentMethod) {
-      where.paymentMethod = query.paymentMethod;
-    }
-
-    if (query.patientId) {
-      where.patientId = query.patientId;
-    }
-
-    // Filter tanggal
     if (query.from || query.to) {
       where.createdAt = {};
       if (query.from) where.createdAt.gte = new Date(query.from);
@@ -143,7 +210,9 @@ export class BillingService {
         take: limit,
         orderBy: { createdAt: 'desc' },
         include: {
-          patient: { select: { id: true, name: true, medicalRecordNo: true, insuranceType: true } },
+          patient: {
+            select: { id: true, name: true, medicalRecordNo: true, insuranceType: true },
+          },
           items: { include: { item: { select: { name: true, type: true } } } },
         },
       }),
@@ -156,19 +225,12 @@ export class BillingService {
         status: t.status,
         paymentMethod: t.paymentMethod,
         subtotal: t.subtotal,
-        tax: t.tax,
         total: t.total,
+        rmeBillingId: t.rmeBillingId,
         createdAt: t.createdAt,
         paidAt: t.paidAt,
         patient: t.patient,
         itemCount: t.items.length,
-        items: t.items.map((ti) => ({
-          name: ti.item.name,
-          type: ti.item.type,
-          quantity: ti.quantity,
-          price: ti.price,
-          subtotal: ti.subtotal,
-        })),
       })),
       meta: {
         total,
@@ -179,7 +241,7 @@ export class BillingService {
     };
   }
 
-  // ─── OUTSTANDING INVOICES ──────────────────────────────
+  // ─── OUTSTANDING INVOICES ────────────────────────────────
 
   async findOutstanding(query: { page?: number; limit?: number }) {
     const page = query.page ?? 1;
@@ -193,10 +255,14 @@ export class BillingService {
         where,
         skip,
         take: limit,
-        orderBy: { createdAt: 'asc' }, // terlama di atas
+        orderBy: { createdAt: 'asc' },
         include: {
-          patient: { select: { id: true, name: true, medicalRecordNo: true, phone: true, insuranceType: true } },
-          items: { include: { item: { select: { name: true, type: true } } } },
+          patient: {
+            select: {
+              id: true, name: true,
+              medicalRecordNo: true, phone: true, insuranceType: true,
+            },
+          },
         },
       }),
       this.prisma.db.transaction.count({ where }),
@@ -208,45 +274,31 @@ export class BillingService {
       data: transactions.map((t) => {
         const diffMs = now.getTime() - new Date(t.createdAt).getTime();
         const daysPending = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
         return {
           id: t.id,
           total: t.total,
           paymentMethod: t.paymentMethod,
+          rmeBillingId: t.rmeBillingId,
           createdAt: t.createdAt,
           daysPending,
           patient: t.patient,
-          items: t.items.map((ti) => ({
-            name: ti.item.name,
-            type: ti.item.type,
-            quantity: ti.quantity,
-            subtotal: ti.subtotal,
-          })),
         };
       }),
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     };
   }
 
-  // ─── SUMMARY / DASHBOARD ──────────────────────────────
+  // ─── SUMMARY / DASHBOARD ────────────────────────────────
 
   async getSummary(query: { from?: string; to?: string }) {
-    // Default: hari ini
     const fromDate = query.from
       ? new Date(query.from)
       : new Date(new Date().setHours(0, 0, 0, 0));
-
     const toDate = query.to ? new Date(query.to) : new Date();
     toDate.setHours(23, 59, 59, 999);
 
     const dateFilter = { gte: fromDate, lte: toDate };
 
-    // 1. Transaksi LUNAS dalam periode
     const paidTransactions = await this.prisma.db.transaction.findMany({
       where: { status: 'LUNAS', paidAt: dateFilter },
       select: { total: true, paymentMethod: true },
@@ -255,25 +307,20 @@ export class BillingService {
     const totalTransactions = paidTransactions.length;
     const totalRevenue = paidTransactions.reduce((sum, t) => sum + t.total, 0);
 
-    // 2. Breakdown per metode pembayaran
     const byPaymentMethod: Record<string, { count: number; amount: number }> = {};
     for (const t of paidTransactions) {
       const method = t.paymentMethod ?? 'UNKNOWN';
-      if (!byPaymentMethod[method]) {
-        byPaymentMethod[method] = { count: 0, amount: 0 };
-      }
+      if (!byPaymentMethod[method]) byPaymentMethod[method] = { count: 0, amount: 0 };
       byPaymentMethod[method].count++;
       byPaymentMethod[method].amount += t.total;
     }
 
-    // 3. Outstanding invoice (semua, bukan hanya dalam periode)
     const outstandingData = await this.prisma.db.transaction.aggregate({
       where: { status: 'PENDING_PAYMENT' },
       _count: true,
       _sum: { total: true },
     });
 
-    // 4. Transaksi hari ini (always included regardless of filter)
     const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
     const todayEnd = new Date(new Date().setHours(23, 59, 59, 999));
 
@@ -282,7 +329,6 @@ export class BillingService {
       select: { total: true },
     });
 
-    // 5. Total semua transaksi dalam periode (termasuk pending/cancelled)
     const allInPeriod = await this.prisma.db.transaction.count({
       where: { createdAt: dateFilter },
     });

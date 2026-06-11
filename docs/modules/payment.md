@@ -10,9 +10,9 @@
 |---|---|
 | **Modul** | `payment` |
 | **Folder sumber** | `src/payment` |
-| **Diperbarui** | 2026-06-08 14:40:19 |
+| **Diperbarui** | 2026-06-09 15:48:49 |
 | **Total file** | 6 |
-| **Total baris kode** | 299 |
+| **Total baris kode** | 303 |
 
 ---
 
@@ -34,7 +34,7 @@ src/payment/
 
 - [src/payment/dto/create-payment.dto.ts](#src-payment-dto-create-payment-dto-ts) (11 baris)
 - [src/payment/payment.controller.spec.ts](#src-payment-payment-controller-spec-ts) (19 baris)
-- [src/payment/payment.controller.ts](#src-payment-payment-controller-ts) (51 baris)
+- [src/payment/payment.controller.ts](#src-payment-payment-controller-ts) (55 baris)
 - [src/payment/payment.module.ts](#src-payment-payment-module-ts) (16 baris)
 - [src/payment/payment.service.spec.ts](#src-payment-payment-service-spec-ts) (19 baris)
 - [src/payment/payment.service.ts](#src-payment-payment-service-ts) (183 baris)
@@ -122,10 +122,14 @@ export class PaymentController {
   // Midtrans tidak punya JWT kita, jadi endpoint ini harus tetap public
   @Post('webhook')
   @ApiOperation({ summary: 'Webhook dari Midtrans — PUBLIC, jangan tambah JWT guard' })
-  handleWebhook(@Body() notification: any, @Req() req: Request) {
-    // #region agent log
+  handleWebhook(@Req() req: Request) { 
+    
+    // 2. Beri penegasan tipe 'any' agar TypeScript tidak protes di baris log
+    const notification: any = req.body;
+
+    // Agent log dibiarkan utuh
     fetch('http://127.0.0.1:7326/ingest/975ac0f8-a319-4e73-8855-f0049df4b786',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'999c66'},body:JSON.stringify({sessionId:'999c66',location:'payment.controller.ts:handleWebhook',message:'webhook request received',data:{contentType:req.headers['content-type'],bodyType:typeof req.body,bodyKeys:req.body&&typeof req.body==='object'?Object.keys(req.body):null,notificationType:typeof notification,notificationIsUndefined:notification===undefined,notificationKeys:notification&&typeof notification==='object'?Object.keys(notification):null,hasOrderId:!!notification?.order_id},timestamp:Date.now(),hypothesisId:'A,C'})}).catch(()=>{});
-    // #endregion
+
     return this.paymentService.handleWebhook(notification);
   }
 

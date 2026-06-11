@@ -1,11 +1,15 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsArray, IsEnum, IsOptional, ValidateNested, IsInt, Min } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsString, IsArray, IsEnum, IsOptional,
+  ValidateNested, IsInt, Min,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export enum PaymentMethod {
   CASH = 'CASH',
   QRIS = 'QRIS',
   DEBIT = 'DEBIT',
+  TRANSFER = 'TRANSFER',
   BPJS = 'BPJS',
 }
 
@@ -21,9 +25,29 @@ export class CartItemDto {
 }
 
 export class CreateBillingDto {
-  @ApiProperty({ example: 'dummy-patient-id' })
+  @ApiProperty({ example: 'uuid-pasien', description: 'ID pasien di sistem POS' })
   @IsString()
   patientId: string;
+
+  @ApiPropertyOptional({
+    example: 'RM-202606-0001',
+    description:
+      'Nomor Rekam Medis dari RME. Jika diisi, sistem akan otomatis ' +
+      'fetch billing dari RME dan menyimpan rmeBillingId.',
+  })
+  @IsOptional()
+  @IsString()
+  rekamMedisId?: string;
+
+  @ApiPropertyOptional({
+    example: 'uuid-billing-rme',
+    description:
+      'ID billing dari sistem RME. Diisi manual jika sudah dapat dari ' +
+      'endpoint GET /billing/from-rme/:rekamMedisId.',
+  })
+  @IsOptional()
+  @IsString()
+  rmeBillingId?: string;
 
   @ApiProperty({ type: [CartItemDto] })
   @IsArray()
@@ -35,7 +59,7 @@ export class CreateBillingDto {
   @IsEnum(PaymentMethod)
   paymentMethod: PaymentMethod;
 
-  @ApiProperty({ example: 'VOUCHER-BPJS-001', required: false })
+  @ApiPropertyOptional({ example: 'VOUCHER-BPJS-001' })
   @IsString()
   @IsOptional()
   voucherCode?: string;
