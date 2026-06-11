@@ -1,9 +1,10 @@
 import {
-  Controller, Post, Get, Body, Param, Query, Request, UseGuards,
+  Controller, Post, Get, Delete, Body, Param, Query, Request, UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { BillingService } from './billing.service';
 import { CreateBillingDto } from './dto/create-billing.dto';
+import { AddPaymentDto } from './dto/add-payment.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -15,7 +16,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 export class BillingController {
   constructor(private readonly billingService: BillingService) {}
 
-  // ─── CREATE ─────────────────────────────────────────────
+  // ─── CREATE TRANSACTION ──────────────────────────────────
 
   @Post()
   @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN')
@@ -23,22 +24,75 @@ export class BillingController {
     summary: 'Buat transaksi baru',
     description:
       'Buat billing POS. Jika `rekamMedisId` diisi, sistem otomatis fetch ' +
-      'billing dari RME dan menyimpan `rmeBillingId` untuk update status setelah LUNAS.',
+      'billing dari RME — dapat `bpjsAmount`, `nonBpjsAmount`, dan `rmeBillingId`. ' +
+      'Response berisi `remainingAmount` untuk panduan split bill.',
   })
   create(@Body() dto: CreateBillingDto, @Request() req: any) {
     return this.billingService.createTransaction(dto, req.user.userId);
   }
 
-  // ─── GET BILLING FROM RME (Preview) ─────────────────────
+  // ─── ADD PAYMENT (SPLIT BILL) ────────────────────────────
+
+  @Post(':id/pay')
+  @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN')
+  @ApiOperation({
+    summary: 'Tambah pembayaran ke transaksi (split bill)',
+    description:
+      'Tambahkan satu metode pembayaran ke transaksi yang sudah ada. ' +
+      'Bisa dipanggil beberapa kali untuk split bill (BPJS + QRIS, Cash + QRIS, dll). ' +
+      'CASH/DEBIT/TRANSFER/BPJS langsung PAID. ' +
+      'QRIS akan return snapToken — tunggu webhook Midtrans untuk konfirmasi. ' +
+      'Status otomatis jadi LUNAS saat paidAmount >= total.',
+  })
+  addPayment(
+    @Param('id') id: string,
+    @Body() dto: AddPaymentDto,
+    @Request() req: any,
+  ) {
+    return this.billingService.addPayment(id, dto, req.user.userId);
+  }
+
+  // ─── GET PAYMENTS (histori split bill) ──────────────────
+
+  @Get(':id/payments')
+  @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN', 'FINANCE_STAFF')
+  @ApiOperation({
+    summary: 'Histori pembayaran per transaksi',
+    description:
+      'Lihat semua pembayaran yang sudah dilakukan untuk satu transaksi. ' +
+      'Include: paidAmount, remainingAmount, breakdown per metode, status masing-masing payment.',
+  })
+  getPayments(@Param('id') id: string) {
+    return this.billingService.getPayments(id);
+  }
+
+  // ─── CANCEL PENDING QRIS ────────────────────────────────
+
+  @Delete(':id/payments/:paymentId/cancel-qris')
+  @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN')
+  @ApiOperation({
+    summary: 'Batalkan QRIS yang masih pending',
+    description:
+      'Batalkan payment QRIS yang belum dibayar agar kasir bisa generate QRIS baru ' +
+      'atau beralih ke metode lain.',
+  })
+  cancelPendingQris(
+    @Param('id') id: string,
+    @Param('paymentId') paymentId: string,
+  ) {
+    return this.billingService.cancelPendingQris(id, paymentId);
+  }
+
+  // ─── GET BILLING FROM RME ────────────────────────────────
 
   @Get('from-rme/:rekamMedisId')
   @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN')
   @ApiOperation({
     summary: 'Preview billing dari RME by rekamMedisId',
     description:
-      'Ambil data billing yang sudah dibuat RME untuk pasien ini. ' +
-      'Tidak membuat record di POS — hanya untuk preview sebelum transaksi dibuat. ' +
-      'Response berisi rmeBillingId, total, breakdown BPJS vs non-BPJS.',
+      'Ambil data billing RME sebelum transaksi dibuat. ' +
+      'Return: rmeBillingId, totalTagihan, bpjsTotal, nonBpjsTotal, items. ' +
+      'bpjsTotal = nominal yang ditanggung BPJS, nonBpjsTotal = yang harus dibayar pasien.',
   })
   getBillingFromRme(@Param('rekamMedisId') rekamMedisId: string) {
     return this.billingService.getBillingFromRme(rekamMedisId);
@@ -49,7 +103,7 @@ export class BillingController {
   @Get()
   @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN', 'FINANCE_STAFF')
   @ApiOperation({ summary: 'Daftar semua transaksi + filter' })
-  @ApiQuery({ name: 'status', required: false, enum: ['DRAFT', 'PENDING_PAYMENT', 'LUNAS', 'CANCELLED'] })
+  @ApiQuery({ name: 'status', required: false, enum: ['DRAFT', 'PENDING_PAYMENT', 'PARTIAL', 'LUNAS', 'CANCELLED'] })
   @ApiQuery({ name: 'paymentMethod', required: false, enum: ['CASH', 'QRIS', 'DEBIT', 'TRANSFER', 'BPJS'] })
   @ApiQuery({ name: 'patientId', required: false })
   @ApiQuery({ name: 'from', required: false, example: '2026-06-01' })
@@ -76,7 +130,10 @@ export class BillingController {
 
   @Get('outstanding')
   @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN', 'FINANCE_STAFF')
-  @ApiOperation({ summary: 'Daftar invoice belum lunas (outstanding)' })
+  @ApiOperation({
+    summary: 'Daftar invoice belum lunas (PENDING_PAYMENT + PARTIAL)',
+    description: 'Menampilkan transaksi yang belum lunas, termasuk yang sudah bayar sebagian (PARTIAL).',
+  })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   findOutstanding(
@@ -104,7 +161,10 @@ export class BillingController {
 
   @Get(':id')
   @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN', 'FINANCE_STAFF')
-  @ApiOperation({ summary: 'Detail transaksi by ID' })
+  @ApiOperation({
+    summary: 'Detail transaksi by ID',
+    description: 'Include: items, payments history, paidAmount, remainingAmount.',
+  })
   findOne(@Param('id') id: string) {
     return this.billingService.getTransaction(id);
   }

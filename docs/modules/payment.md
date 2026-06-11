@@ -10,9 +10,9 @@
 |---|---|
 | **Modul** | `payment` |
 | **Folder sumber** | `src/payment` |
-| **Diperbarui** | 2026-06-09 15:48:49 |
+| **Diperbarui** | 2026-06-11 09:49:17 |
 | **Total file** | 6 |
-| **Total baris kode** | 303 |
+| **Total baris kode** | 336 |
 
 ---
 
@@ -35,9 +35,9 @@ src/payment/
 - [src/payment/dto/create-payment.dto.ts](#src-payment-dto-create-payment-dto-ts) (11 baris)
 - [src/payment/payment.controller.spec.ts](#src-payment-payment-controller-spec-ts) (19 baris)
 - [src/payment/payment.controller.ts](#src-payment-payment-controller-ts) (55 baris)
-- [src/payment/payment.module.ts](#src-payment-payment-module-ts) (16 baris)
+- [src/payment/payment.module.ts](#src-payment-payment-module-ts) (14 baris)
 - [src/payment/payment.service.spec.ts](#src-payment-payment-service-spec-ts) (19 baris)
-- [src/payment/payment.service.ts](#src-payment-payment-service-ts) (183 baris)
+- [src/payment/payment.service.ts](#src-payment-payment-service-ts) (218 baris)
 
 ---
 
@@ -150,17 +150,15 @@ export class PaymentController {
 ## src/payment/payment.module.ts
 
 ```typescript
-// src/payment/payment.module.ts
-// OVERWRITE file yang sudah ada
-
 import { Module } from '@nestjs/common';
 import { PaymentController } from './payment.controller';
 import { PaymentService } from './payment.service';
 import { AuthModule } from '../auth/auth.module';
 import { AccountingModule } from '../accounting/accounting.module';
+import { RmeModule } from '../rme/rme.module';
 
 @Module({
-  imports: [AuthModule, AccountingModule],
+  imports: [AuthModule, AccountingModule, RmeModule],
   controllers: [PaymentController],
   providers: [PaymentService],
 })
@@ -199,31 +197,24 @@ describe('PaymentService', () => {
 ## src/payment/payment.service.ts
 
 ```typescript
-// src/payment/payment.service.ts
-//
-// PERUBAHAN dari versi sebelumnya:
-// + Inject AccountingService
-// + Panggil createJournalFromTransaction() saat status → LUNAS
-// + Simpan paidAt timestamp saat LUNAS
-
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable, NotFoundException, BadRequestException, Logger,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
+import { RmeService } from '../rme/rme.service';
 import { TransactionStatus } from '@prisma/client';
 import * as midtransClient from 'midtrans-client';
 
-// ID system user untuk auto-journal
-// Ini dipakai saat jurnal dibuat otomatis oleh sistem (bukan oleh user yang login)
-// [CATATAN]: Idealnya ada dedicated system user di DB — untuk sekarang pakai ID admin pertama
-const SYSTEM_USER_PLACEHOLDER = 'SYSTEM';
-
 @Injectable()
 export class PaymentService {
+  private readonly logger = new Logger(PaymentService.name);
   private snap: midtransClient.Snap;
 
   constructor(
     private prisma: PrismaService,
-    private accountingService: AccountingService, // inject AccountingService
+    private accountingService: AccountingService,
+    private rmeService: RmeService,
   ) {
     this.snap = new midtransClient.Snap({
       isProduction: process.env.MIDTRANS_IS_PRODUCTION === 'true',
@@ -231,6 +222,8 @@ export class PaymentService {
       clientKey: process.env.MIDTRANS_CLIENT_KEY!,
     });
   }
+
+  // ─── CREATE SNAP TOKEN ───────────────────────────────────
 
   async createSnapToken(transactionId: string) {
     const transaction = await this.prisma.db.transaction.findUnique({
@@ -245,7 +238,7 @@ export class PaymentService {
 
     if (transaction.status !== TransactionStatus.PENDING_PAYMENT) {
       throw new BadRequestException(
-        `Transaksi tidak bisa dibayar — status saat ini: ${transaction.status}`
+        `Transaksi tidak bisa dibayar — status saat ini: ${transaction.status}`,
       );
     }
 
@@ -258,18 +251,16 @@ export class PaymentService {
       quantity: ti.quantity,
     }));
 
-    const customerDetails = {
-      first_name: transaction.patient?.name ?? 'Pasien',
-      phone: transaction.patient?.phone ?? '08000000000',
-    };
-
     const parameter = {
       transaction_details: {
         order_id: orderId,
         gross_amount: Math.round(Number(transaction.total)),
       },
       item_details: itemDetails,
-      customer_details: customerDetails,
+      customer_details: {
+        first_name: transaction.patient?.name ?? 'Pasien',
+        phone: transaction.patient?.phone ?? '08000000000',
+      },
       payment_type_filter: ['qris', 'bank_transfer', 'credit_card'],
     };
 
@@ -288,17 +279,22 @@ export class PaymentService {
         snapToken: snapResponse.token,
         snapRedirectUrl: snapResponse.redirect_url,
         total: transaction.total,
+        rmeBillingId: transaction.rmeBillingId,
       },
     };
   }
 
+  // ─── HANDLE WEBHOOK ──────────────────────────────────────
+
   async handleWebhook(notification: any) {
-    // #region agent log
-    fetch('http://127.0.0.1:7326/ingest/975ac0f8-a319-4e73-8855-f0049df4b786',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'999c66'},body:JSON.stringify({sessionId:'999c66',location:'payment.service.ts:handleWebhook',message:'service entry',data:{notificationType:typeof notification,notificationIsUndefined:notification===undefined,notificationIsNull:notification===null,rawNotification:notification?{order_id:notification.order_id,transaction_status:notification.transaction_status,fraud_status:notification.fraud_status}:null},timestamp:Date.now(),hypothesisId:'A,B'})}).catch(()=>{});
-    // #endregion
-    const orderId = notification.order_id;
-    const transactionStatus = notification.transaction_status;
-    const fraudStatus = notification.fraud_status;
+    const orderId = notification?.order_id;
+    const transactionStatus = notification?.transaction_status;
+    const fraudStatus = notification?.fraud_status;
+
+    if (!orderId) {
+      this.logger.warn('Webhook diterima tanpa order_id — diabaikan');
+      return { message: 'Webhook diabaikan: tidak ada order_id' };
+    }
 
     const transaction = await this.prisma.db.transaction.findFirst({
       where: { midtransOrderId: orderId },
@@ -308,7 +304,7 @@ export class PaymentService {
       throw new NotFoundException(`Transaksi dengan order_id ${orderId} tidak ditemukan`);
     }
 
-    // Tentukan status baru menggunakan TransactionStatus enum
+    // Tentukan status baru
     let newStatus: TransactionStatus = transaction.status;
 
     if (transactionStatus === 'settlement') {
@@ -317,52 +313,46 @@ export class PaymentService {
       newStatus = fraudStatus === 'accept'
         ? TransactionStatus.LUNAS
         : TransactionStatus.CANCELLED;
-    } else if (['cancel', 'deny', 'expire'].includes(transactionStatus)) {
+    } else if (['cancel', 'deny', 'expire', 'failure'].includes(transactionStatus)) {
       newStatus = TransactionStatus.CANCELLED;
     }
 
-    // Update status di DB
+    // Update status di DB POS
     await this.prisma.db.transaction.update({
       where: { id: transaction.id },
       data: {
         status: newStatus,
-        // Simpan timestamp saat LUNAS
         ...(newStatus === TransactionStatus.LUNAS && { paidAt: new Date() }),
       },
     });
 
-    // ✅ AUTO-JOURNAL: buat jurnal akuntansi otomatis saat LUNAS
-    // Hanya dibuat sekali — AccountingService sudah handle idempotency
+    // ─── Post-LUNAS actions (paralel, tidak boleh gagalkan webhook) ───
     if (newStatus === TransactionStatus.LUNAS) {
-      try {
-        // Ambil ID user pertama sebagai fallback system user
-        // [CATATAN]: Idealnya pakai dedicated system account
-        const systemUser = await this.prisma.db.user.findFirst({
-          where: { role: 'SUPER_ADMIN' },
-        });
+      this.logger.log(`✅ Transaksi ${transaction.id} LUNAS — jalankan post-payment actions`);
 
-        const journalCreatedBy = systemUser?.id ?? transaction.userId;
-        await this.accountingService.createJournalFromTransaction(
+      // Jalankan semua aksi post-payment secara paralel
+      await Promise.allSettled([
+        this.handleAutoJournal(transaction.id, transaction.userId),
+        this.handleRmePayCallback(
+          transaction.rmeBillingId,
+          transaction.paymentMethod as string,
           transaction.id,
-          journalCreatedBy,
-        );
-      } catch (err) {
-        // Jangan gagalkan webhook karena error jurnal
-        // Log error tapi tetap return success ke Midtrans
-        console.error(`❌ Auto-journal gagal untuk transaksi ${transaction.id}:`, err);
-      }
+        ),
+        // TODO: handleWmsCallback() — WMS integration (sprint berikutnya)
+      ]);
     }
 
-    console.log(`✅ Webhook: Order ${orderId} → status ${newStatus}`);
+    this.logger.log(`Webhook: Order ${orderId} → status ${newStatus}`);
     return { message: 'Webhook berhasil diproses', status: newStatus };
   }
+
+  // ─── GET TRANSACTION STATUS ──────────────────────────────
 
   async getTransactionStatus(transactionId: string) {
     const transaction = await this.prisma.db.transaction.findUnique({
       where: { id: transactionId },
       include: {
-        items: { include: { item: true } },
-        patient: true,
+        patient: { select: { id: true, name: true, medicalRecordNo: true } },
       },
     });
 
@@ -376,9 +366,52 @@ export class PaymentService {
         total: transaction.total,
         paymentMethod: transaction.paymentMethod,
         midtransOrderId: transaction.midtransOrderId,
+        rmeBillingId: transaction.rmeBillingId,
         paidAt: transaction.paidAt,
+        patient: transaction.patient,
       },
     };
+  }
+
+  // ─── PRIVATE: Post-payment handlers ──────────────────────
+
+  private async handleAutoJournal(
+    transactionId: string,
+    userId: string,
+  ): Promise<void> {
+    try {
+      const systemUser = await this.prisma.db.user.findFirst({
+        where: { role: 'SUPER_ADMIN' },
+      });
+      const createdBy = systemUser?.id ?? userId;
+      await this.accountingService.createJournalFromTransaction(transactionId, createdBy);
+      this.logger.log(`📒 Auto-journal created for transaction ${transactionId}`);
+    } catch (err) {
+      this.logger.error(`Auto-journal gagal untuk ${transactionId}:`, err);
+    }
+  }
+
+  private async handleRmePayCallback(
+    rmeBillingId: string | null,
+    paymentMethod: string,
+    posTransactionId: string,
+  ): Promise<void> {
+    if (!rmeBillingId) {
+      this.logger.debug(
+        `Transaksi ${posTransactionId} tidak punya rmeBillingId — skip RME callback`,
+      );
+      return;
+    }
+
+    const catatan = `Lunas via Smart Clinic POS | TrxID: ${posTransactionId}`;
+    const success = await this.rmeService.payBilling(rmeBillingId, paymentMethod, catatan);
+
+    if (!success) {
+      this.logger.warn(
+        `⚠️  RME pay callback gagal untuk billing ${rmeBillingId} — perlu manual follow-up`,
+      );
+      // TODO: simpan ke retry queue atau alert table untuk follow-up manual
+    }
   }
 }
 
