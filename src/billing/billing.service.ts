@@ -372,6 +372,58 @@ export class BillingService {
     return { message: 'QRIS payment dibatalkan', paymentId };
   }
 
+  async getPaymentStatus(transactionId: string, paymentId: string) {
+    const payment = await this.prisma.db.payment.findFirst({
+      where: { id: paymentId, transactionId },
+      select: {
+        id: true,
+        method: true,
+        amount: true,
+        status: true,
+        midtransOrderId: true,
+        paidAt: true,
+        createdAt: true,
+      },
+    });
+  
+    if (!payment) {
+      throw new NotFoundException('Payment tidak ditemukan');
+    }
+  
+    // Ambil sisa tagihan dari transaksi
+    const transaction = await this.prisma.db.transaction.findUnique({
+      where: { id: transactionId },
+      select: {
+        status: true,
+        total: true,
+        paidAmount: true,
+      },
+    });
+  
+    return {
+      message: 'Status payment',
+      data: {
+        payment: {
+          id: payment.id,
+          method: payment.method,
+          amount: payment.amount,
+          status: payment.status,   // PENDING | PAID | CANCELLED
+          paidAt: payment.paidAt,
+          createdAt: payment.createdAt,
+        },
+        transaction: {
+          status: transaction?.status,
+          total: transaction?.total,
+          paidAmount: transaction?.paidAmount,
+          remainingAmount: Math.max(
+            0,
+            (transaction?.total ?? 0) - (transaction?.paidAmount ?? 0),
+          ),
+        },
+      },
+    };
+  }
+
   // ─── GET TRANSACTION ─────────────────────────────────────
 
   async getTransaction(id: string) {

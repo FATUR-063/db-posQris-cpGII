@@ -10,7 +10,7 @@ export interface CreateSyncLogParams {
   status: 'SUCCESS' | 'FAILED' | 'PENDING';
   requestBody?: any;
   responseBody?: any;
-  errorMessage?: string;
+  errorMessage?: string | null;
   httpStatus?: number;
   durationMs?: number;
 }

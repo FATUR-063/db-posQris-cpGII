@@ -66,6 +66,23 @@ export class BillingController {
     return this.billingService.getPayments(id);
   }
 
+  @Get(':id/payments/:paymentId/status')
+  @Roles('KASIR', 'MANAGER', 'SUPER_ADMIN', 'FINANCE_STAFF')
+  @ApiOperation({
+    summary: 'Polling status payment QRIS',
+    description:
+      'Cek status satu payment secara real-time. ' +
+      'FE polling endpoint ini setiap 3 detik setelah QR ditampilkan ke pasien. ' +
+      'Saat status berubah PENDING → PAID, transaksi otomatis update ke LUNAS. ' +
+      'Stop polling saat payment.status = PAID atau CANCELLED.',
+  })
+  getPaymentStatus(
+    @Param('id') id: string,
+    @Param('paymentId') paymentId: string,
+  ) {
+    return this.billingService.getPaymentStatus(id, paymentId);
+  }
+
   // ─── CANCEL PENDING QRIS ────────────────────────────────
 
   @Delete(':id/payments/:paymentId/cancel-qris')
