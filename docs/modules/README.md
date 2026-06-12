@@ -6,17 +6,17 @@
 npm run docs:modules
 ```
 
-**Diperbarui:** 2026-06-11 09:49:18
+**Diperbarui:** 2026-06-12 06:54:15
 
 | Modul | Key | File | Baris kode |
 |-------|-----|------|------------|
 | [Auth](./auth.md) | `auth` | 12 | 486 |
-| [Billing](./billing.md) | `billing` | 6 | 586 |
+| [Billing](./billing.md) | `billing` | 7 | 962 |
 | [Items](./items.md) | `items` | 6 | 151 |
-| [Payment](./payment.md) | `payment` | 6 | 336 |
+| [Payment](./payment.md) | `payment` | 6 | 465 |
 | [Accounting](./accounting.md) | `accounting` | 4 | 640 |
 | [Prisma](./prisma.md) | `prisma` | 3 | 59 |
-| [App (root)](./app.md) | `app` | 5 | 133 |
+| [App (root)](./app.md) | `app` | 5 | 139 |
 
 ---
 

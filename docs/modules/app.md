@@ -10,9 +10,9 @@
 |---|---|
 | **Modul** | `app` |
 | **Folder sumber** | `src` |
-| **Diperbarui** | 2026-06-11 09:49:18 |
+| **Diperbarui** | 2026-06-12 06:54:15 |
 | **Total file** | 5 |
-| **Total baris kode** | 133 |
+| **Total baris kode** | 139 |
 
 ---
 
@@ -33,7 +33,7 @@ src/
 
 - [src/app.controller.spec.ts](#src-app-controller-spec-ts) (23 baris)
 - [src/app.controller.ts](#src-app-controller-ts) (13 baris)
-- [src/app.module.ts](#src-app-module-ts) (31 baris)
+- [src/app.module.ts](#src-app-module-ts) (37 baris)
 - [src/app.service.ts](#src-app-service-ts) (9 baris)
 - [src/main.ts](#src-main-ts) (57 baris)
 
@@ -106,6 +106,9 @@ import { ItemsModule } from './items/items.module';
 import { AccountingModule } from './accounting/accounting.module';
 import { PatientsModule } from './patients/patients.module';
 import { RmeModule } from './rme/rme.module';
+import { WmsModule } from './wms/wms.module';
+import { InvoiceModule } from './invoice/invoice.module';
+import { SyncLogModule } from './sync-log/sync-log.module';
 
 @Module({
   imports: [
@@ -113,9 +116,12 @@ import { RmeModule } from './rme/rme.module';
     AuthModule,
     PatientsModule,
     RmeModule,
+    WmsModule,
     BillingModule,
     PaymentModule,
+    InvoiceModule,
     ItemsModule,
+    SyncLogModule,
     AccountingModule, // ← baru
   ],
   controllers: [AppController],

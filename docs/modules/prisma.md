@@ -10,7 +10,7 @@
 |---|---|
 | **Modul** | `prisma` |
 | **Folder sumber** | `src/prisma` |
-| **Diperbarui** | 2026-06-11 09:49:18 |
+| **Diperbarui** | 2026-06-12 06:54:15 |
 | **Total file** | 3 |
 | **Total baris kode** | 59 |
 

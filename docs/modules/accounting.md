@@ -10,7 +10,7 @@
 |---|---|
 | **Modul** | `accounting` |
 | **Folder sumber** | `src/accounting` |
-| **Diperbarui** | 2026-06-11 09:49:18 |
+| **Diperbarui** | 2026-06-12 06:54:15 |
 | **Total file** | 4 |
 | **Total baris kode** | 640 |
 

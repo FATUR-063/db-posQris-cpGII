@@ -55,12 +55,6 @@ export class PaymentService {
         order_id: orderId,
         gross_amount: Math.round(remainingAmount),
       },
-      item_details: transaction.items.map((ti) => ({
-        id: ti.itemId,
-        name: ti.item.name,
-        price: Math.round(Number(ti.price)),
-        quantity: ti.quantity,
-      })),
       customer_details: {
         first_name: transaction.patient?.name ?? 'Pasien',
         phone: transaction.patient?.phone ?? '08000000000',
