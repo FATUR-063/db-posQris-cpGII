@@ -14,6 +14,7 @@ import { PatientsModule } from './patients/patients.module';
 import { RmeModule } from './rme/rme.module';
 import { WmsModule } from './wms/wms.module';
 import { InvoiceModule } from './invoice/invoice.module';
+import { SyncLogModule } from './sync-log/sync-log.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { InvoiceModule } from './invoice/invoice.module';
     PaymentModule,
     InvoiceModule,
     ItemsModule,
+    SyncLogModule,
     AccountingModule, // ← baru
   ],
   controllers: [AppController],
