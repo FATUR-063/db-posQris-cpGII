@@ -13,6 +13,7 @@ import { AccountingModule } from './accounting/accounting.module';
 import { PatientsModule } from './patients/patients.module';
 import { RmeModule } from './rme/rme.module';
 import { WmsModule } from './wms/wms.module';
+import { InvoiceModule } from './invoice/invoice.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { WmsModule } from './wms/wms.module';
     WmsModule,
     BillingModule,
     PaymentModule,
+    InvoiceModule,
     ItemsModule,
     AccountingModule, // ← baru
   ],
